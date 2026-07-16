@@ -23,6 +23,8 @@ The heart of Fractured Archive Resolver is `request_archival_mapping` / `request
 
 ## Stack
 
+**Resubmission evidence fix:** archival mapping now makes validators fetch each disputed `content_uri` and each challenge `evidence_uri`, compute SHA-256, compare those hashes to the submitted commitments, and include the fetched excerpts plus provenance checks in the consensus context. If fewer than two records are validator-retrievable and hash-verified, or challenge evidence fails verification, the stored map is forced to `insufficient_evidence`.
+
 | Layer | Technology |
 |-------|-----------|
 | Frontend | React 18, TypeScript, Vite |
@@ -35,7 +37,7 @@ The heart of Fractured Archive Resolver is `request_archival_mapping` / `request
 
 ## Live deployment
 
-- **Contract:** deployed on StudioNet at `0x5B9Ab68F06A149E8183C80028A7E1c74031bA498`
+- **Contract:** deployed on StudioNet at `0x9BAC0b002F7Bf28B6d2EE3fB44ce7f518199Ad4B`
 - **Explorer:** [explorer.genlayer.com](https://explorer.genlayer.com)
 - **Frontend:** run locally per [Getting started](#getting-started) below
 
@@ -172,6 +174,12 @@ Without a contract address set, the app runs entirely in a **simulated mode**: a
 ---
 
 ## Design system: Archive Room
+
+Additional evidence invariants for resubmission:
+
+- Validator evidence retrieval is mandatory for archival conclusions: at least two submitted records must be fetched from `http(s)` URIs and match their SHA-256 commitments.
+- Challenge evidence must also be validator-retrievable and hash-verified; otherwise the remap records `insufficient_evidence` instead of relying on challenger or submitter metadata.
+- The canonical map includes an `evidence_verification` object so reviewers and users can inspect the evidence gate that supported or blocked the conclusion.
 
 | Token | Value |
 |-------|-------|

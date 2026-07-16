@@ -3,6 +3,7 @@
 
 from genlayer import *
 
+import hashlib
 import json
 import typing
 
@@ -180,6 +181,90 @@ class FracturedArchiveResolver(gl.Contract):
         if score > 100:
             return 100
         return score
+
+    def _to_bool(self, value: typing.Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        cleaned = str(value).strip().lower()
+        return cleaned == "true" or cleaned == "1" or cleaned == "yes"
+
+    def _normalise_hash(self, value: str) -> str:
+        cleaned = value.strip().lower()
+        if cleaned.startswith("sha256:"):
+            return cleaned[7:]
+        if cleaned.startswith("sha-256:"):
+            return cleaned[8:]
+        if cleaned.startswith("0x") and len(cleaned) == 66:
+            return cleaned[2:]
+        return cleaned
+
+    def _sha256_hex(self, body: bytes) -> str:
+        return hashlib.sha256(body).hexdigest()
+
+    def _hash_matches(self, claimed_hash: str, actual_hash: str) -> bool:
+        return self._normalise_hash(claimed_hash) == actual_hash.lower()
+
+    def _retrievable_uri(self, uri: str) -> bool:
+        cleaned = uri.strip().lower()
+        return cleaned.startswith("http://") or cleaned.startswith("https://")
+
+    def _fetch_integrity_snapshot(
+        self,
+        uri: str,
+        claimed_hash: str,
+        label: str,
+    ) -> typing.Any:
+        if not self._retrievable_uri(uri):
+            return {
+                "label": label,
+                "uri": self._limit(uri, 500),
+                "retrieval_status": "missing_or_unsupported_uri",
+                "http_status": 0,
+                "claimed_sha256": self._normalise_hash(claimed_hash),
+                "computed_sha256": "",
+                "hash_match": False,
+                "byte_length": 0,
+                "content_excerpt": "",
+                "provenance_notes": "Validators could not retrieve this record from an http(s) URI.",
+            }
+
+        try:
+            response = gl.nondet.web.get(uri)
+            body = response.body
+            text = body.decode("utf-8", "replace")
+            actual_hash = self._sha256_hex(body)
+            status_code = self._to_int(response.status_code, 0)
+            hash_match = self._hash_matches(claimed_hash, actual_hash)
+            retrieval_status = "verified"
+            if status_code < 200 or status_code > 299:
+                retrieval_status = "http_error"
+            if not hash_match:
+                retrieval_status = "hash_mismatch"
+            return {
+                "label": label,
+                "uri": self._limit(uri, 500),
+                "retrieval_status": retrieval_status,
+                "http_status": status_code,
+                "claimed_sha256": self._normalise_hash(claimed_hash),
+                "computed_sha256": actual_hash,
+                "hash_match": hash_match,
+                "byte_length": len(body),
+                "content_excerpt": self._limit(text, 2200),
+                "provenance_notes": "Fetched directly by GenLayer validators during archival mapping.",
+            }
+        except Exception as error:
+            return {
+                "label": label,
+                "uri": self._limit(uri, 500),
+                "retrieval_status": "retrieval_failed",
+                "http_status": 0,
+                "claimed_sha256": self._normalise_hash(claimed_hash),
+                "computed_sha256": "",
+                "hash_match": False,
+                "byte_length": 0,
+                "content_excerpt": "",
+                "provenance_notes": self._limit("Validator retrieval failed: " + str(error), 300),
+            }
 
     def _next_id(self, prefix: str, counter_name: str) -> str:
         if counter_name == "case":
@@ -559,6 +644,7 @@ class FracturedArchiveResolver(gl.Contract):
                     "challenge_reason": challenge.get("challenge_reason", ""),
                     "explanation": challenge.get("explanation", ""),
                     "evidence_uri": challenge.get("evidence_uri", ""),
+                    "evidence_hash": challenge.get("evidence_hash", ""),
                 }
             )
 
@@ -572,25 +658,87 @@ class FracturedArchiveResolver(gl.Contract):
             }
         )
 
-        # Build deterministic context string (same on all validator nodes)
-        context = (
-            f"ARCHIVE CASE: {case_json}\n"
-            f"SUBMITTED VERSIONS: {self._json(versions_payload)}\n"
-            f"OPEN CHALLENGES: {self._json(challenges_payload)}"
-        )
+        def build_evidence_context() -> str:
+            verified_versions: typing.List[typing.Any] = []
+            verified_version_count = 0
+            for item in versions_payload:
+                snapshot = self._fetch_integrity_snapshot(
+                    str(item.get("content_uri", "")),
+                    str(item.get("content_hash", "")),
+                    "version:" + str(item.get("version_id", "")),
+                )
+                if snapshot.get("retrieval_status", "") == "verified":
+                    verified_version_count = verified_version_count + 1
+                item["validator_retrieval"] = snapshot
+                verified_versions.append(item)
 
-        # non_comparative: leader generates the archival map, validators only
-        # judge whether it is a reasonable reading of the submitted versions.
+            verified_challenges: typing.List[typing.Any] = []
+            failed_challenge_evidence = 0
+            for item in challenges_payload:
+                evidence_uri = str(item.get("evidence_uri", ""))
+                evidence_hash = str(item.get("evidence_hash", ""))
+                if evidence_uri.strip() == "" or evidence_hash.strip() == "":
+                    item["validator_retrieval"] = {
+                        "label": "challenge:" + str(item.get("target_id", "")),
+                        "uri": self._limit(evidence_uri, 500),
+                        "retrieval_status": "missing_evidence",
+                        "http_status": 0,
+                        "claimed_sha256": self._normalise_hash(evidence_hash),
+                        "computed_sha256": "",
+                        "hash_match": False,
+                        "byte_length": 0,
+                        "content_excerpt": "",
+                        "provenance_notes": "Challenge lacks both retrievable evidence_uri and evidence_hash.",
+                    }
+                    failed_challenge_evidence = failed_challenge_evidence + 1
+                else:
+                    snapshot = self._fetch_integrity_snapshot(
+                        evidence_uri,
+                        evidence_hash,
+                        "challenge:" + str(item.get("target_id", "")),
+                    )
+                    if snapshot.get("retrieval_status", "") != "verified":
+                        failed_challenge_evidence = failed_challenge_evidence + 1
+                    item["validator_retrieval"] = snapshot
+                verified_challenges.append(item)
+
+            sufficient_evidence = verified_version_count >= 2 and failed_challenge_evidence == 0
+            evidence_gate = {
+                "verified_version_count": verified_version_count,
+                "total_version_count": len(versions_payload),
+                "failed_challenge_evidence_count": failed_challenge_evidence,
+                "sufficient_evidence": sufficient_evidence,
+                "required_outcome_if_false": "insufficient_evidence",
+                "rule": (
+                    "At least two submitted records must be retrievable by validators and match "
+                    "their claimed sha256 hashes. Every open challenge with evidence must also "
+                    "be retrievable and hash-verified. If this is false, the archival conclusion "
+                    "must explicitly be insufficient_evidence."
+                ),
+            }
+
+            return (
+                f"ARCHIVE CASE: {case_json}\n"
+                f"VALIDATOR EVIDENCE GATE: {self._json(evidence_gate)}\n"
+                f"VALIDATOR-FETCHED SUBMITTED VERSIONS: {self._json(verified_versions)}\n"
+                f"VALIDATOR-FETCHED OPEN CHALLENGES: {self._json(verified_challenges)}"
+            )
+
+        # non_comparative: every validator fetches and hash-checks the disputed
+        # records before judging the leader's archival map.
         consensus_json = gl.eq_principle.prompt_non_comparative(
-            lambda: context,
+            build_evidence_context,
             task=(
                 "You are an archival reasoning agent for Fractured Archive Resolver. "
                 "Your task is not to choose one version and erase the rest. "
-                "Compare the submitted versions of this archive case. Identify agreement zones, "
+                "Use validator-fetched content excerpts and validator-computed sha256 hashes, "
+                "not submitter-authored metadata alone. Compare the submitted versions of this archive case. Identify agreement zones, "
                 "divergence points, likely timeline, source reliability, possible transformations, "
                 "missing context, and uncertainty. Preserve contradictions where they remain "
                 "meaningful or unresolved. Do not invent evidence. Do not make private assumptions. "
-                "If the submitted versions are insufficient, say so clearly. "
+                "If the VALIDATOR EVIDENCE GATE has sufficient_evidence=false, return map_status "
+                "insufficient_evidence, uncertainty_level high or irreducible, recommended_archive_treatment "
+                "requires_more_evidence, and confidence no higher than 35. "
                 "Return ONLY valid JSON — no markdown, no emojis, no explanation outside the JSON.\n\n"
                 "Return exactly this structure:\n"
                 '{"map_status":"partial_map","relationship_summary":"...",'
@@ -602,6 +750,8 @@ class FracturedArchiveResolver(gl.Contract):
                 '"affected_versions":["ver-1","ver-2"],"severity":"major","confidence":75,'
                 '"evidence_notes":"..."}],'
                 '"version_reliability":[{"version_id":"ver-1","reliability_level":"medium","reason":"..."}],'
+                '"evidence_verification":{"verified_version_count":2,"total_version_count":2,'
+                '"failed_challenge_evidence_count":0,"sufficient_evidence":true,"notes":"..."},'
                 '"uncertainty_level":"medium","recommended_archive_treatment":"preserve_as_parallel",'
                 '"human_notes":"...","confidence":70}\n\n'
                 "map_status options: resolved_map, partial_map, insufficient_evidence, contested_map, requires_more_versions\n"
@@ -622,6 +772,12 @@ class FracturedArchiveResolver(gl.Contract):
             ),
             criteria=(
                 "The response must be valid JSON matching the requested structure.\n"
+                "The map must be based on validator-fetched excerpts and validator-computed hashes, "
+                "not only submitter-authored titles, dates, source labels, or metadata.\n"
+                "If fewer than two submitted records are retrievable and sha256-verified by validators, "
+                "map_status must be insufficient_evidence.\n"
+                "If any challenge evidence is missing, unretrievable, or hash-mismatched, map_status must be "
+                "insufficient_evidence unless the challenge is explicitly irrelevant to the current map.\n"
                 "map_status must be exactly one of: resolved_map, partial_map, insufficient_evidence, "
                 "contested_map, requires_more_versions.\n"
                 "uncertainty_level must be exactly one of: low, medium, high, irreducible.\n"
@@ -634,6 +790,7 @@ class FracturedArchiveResolver(gl.Contract):
         )
 
         normalized = self._normalise_archival_map(consensus_json, case_id, version_ids)
+        normalized = self._apply_evidence_gate(normalized)
 
         map_id = self._next_id("map", "map")
         map_record = {
@@ -803,6 +960,20 @@ class FracturedArchiveResolver(gl.Contract):
                     }
                 )
 
+        raw_evidence = parsed.get("evidence_verification", {})
+        if not isinstance(raw_evidence, dict):
+            raw_evidence = {}
+        evidence_verification = {
+            "verified_version_count": self._to_int(raw_evidence.get("verified_version_count", 0), 0),
+            "total_version_count": self._to_int(raw_evidence.get("total_version_count", len(valid_ids)), len(valid_ids)),
+            "failed_challenge_evidence_count": self._to_int(
+                raw_evidence.get("failed_challenge_evidence_count", 0),
+                0,
+            ),
+            "sufficient_evidence": self._to_bool(raw_evidence.get("sufficient_evidence", False)),
+            "notes": self._limit(raw_evidence.get("notes", ""), 500),
+        }
+
         return {
             "case_id": case_id,
             "map_status": self._pick_enum(parsed.get("map_status", ""), self.MAP_STATUSES, "partial_map"),
@@ -811,6 +982,7 @@ class FracturedArchiveResolver(gl.Contract):
             "agreement_zones": agreement_zones,
             "divergence_points": divergence_points,
             "version_reliability": version_reliability,
+            "evidence_verification": evidence_verification,
             "uncertainty_level": self._pick_enum(
                 parsed.get("uncertainty_level", ""), self.UNCERTAINTY_LEVELS, "high"
             ),
@@ -822,6 +994,26 @@ class FracturedArchiveResolver(gl.Contract):
             "human_notes": self._limit(parsed.get("human_notes", ""), 500),
             "confidence": self._bounded_score(parsed.get("confidence", 50), 50),
         }
+
+    def _apply_evidence_gate(self, normalized: typing.Any) -> typing.Any:
+        evidence = normalized.get("evidence_verification", {})
+        verified_versions = self._to_int(evidence.get("verified_version_count", 0), 0)
+        failed_challenges = self._to_int(evidence.get("failed_challenge_evidence_count", 0), 0)
+        sufficient = self._to_bool(evidence.get("sufficient_evidence", False))
+        if not sufficient or verified_versions < 2 or failed_challenges > 0:
+            normalized["map_status"] = "insufficient_evidence"
+            normalized["uncertainty_level"] = "high"
+            normalized["recommended_archive_treatment"] = "requires_more_evidence"
+            if self._to_int(normalized.get("confidence", 0), 0) > 35:
+                normalized["confidence"] = 35
+            notes = str(normalized.get("human_notes", ""))
+            gate_note = (
+                "Validator evidence gate failed: at least two records and all challenge evidence "
+                "must be retrieved and sha256-verified before an archival conclusion can be trusted."
+            )
+            if gate_note not in notes:
+                normalized["human_notes"] = self._limit((notes + " " + gate_note).strip(), 500)
+        return normalized
 
     # ------------------------------------------------------------------
     # Read methods

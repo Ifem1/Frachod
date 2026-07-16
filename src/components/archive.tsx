@@ -190,6 +190,29 @@ export function ConsensusMapPanel({
         </div>
       </div>
 
+      {map.evidenceVerification && (
+        <div className="panel">
+          <div className="panel-title">Evidence verification</div>
+          <div className="stats-row">
+            <div className="stat">
+              <b>{map.evidenceVerification.verifiedVersionCount}/{map.evidenceVerification.totalVersionCount}</b>
+              <span>Verified records</span>
+            </div>
+            <div className="stat">
+              <b>{map.evidenceVerification.failedChallengeEvidenceCount}</b>
+              <span>Challenge evidence failures</span>
+            </div>
+            <div className="stat">
+              <b>{map.evidenceVerification.sufficientEvidence ? "Passed" : "Insufficient"}</b>
+              <span>Evidence gate</span>
+            </div>
+          </div>
+          {map.evidenceVerification.notes && (
+            <p style={{ marginBottom: 0, fontSize: 13, color: "#8B8A84" }}>{map.evidenceVerification.notes}</p>
+          )}
+        </div>
+      )}
+
       <div className="panel">
         <div className="panel-title">2 · Relationship summary</div>
         <p style={{ margin: 0 }}>{map.relationshipSummary}</p>

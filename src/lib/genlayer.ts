@@ -304,6 +304,13 @@ function toArchivalMap(m: ChainMap): ArchivalMap {
       evidence_notes: string;
     }>;
     version_reliability: Array<{ version_id: string; reliability_level: string; reason: string }>;
+    evidence_verification?: {
+      verified_version_count: number;
+      total_version_count: number;
+      failed_challenge_evidence_count: number;
+      sufficient_evidence: boolean;
+      notes: string;
+    };
     uncertainty_level: string;
     recommended_archive_treatment: string;
     human_notes: string;
@@ -353,6 +360,15 @@ function toArchivalMap(m: ChainMap): ArchivalMap {
     agreementZones,
     divergencePoints,
     versionReliability,
+    evidenceVerification: canonical.evidence_verification
+      ? {
+          verifiedVersionCount: canonical.evidence_verification.verified_version_count,
+          totalVersionCount: canonical.evidence_verification.total_version_count,
+          failedChallengeEvidenceCount: canonical.evidence_verification.failed_challenge_evidence_count,
+          sufficientEvidence: canonical.evidence_verification.sufficient_evidence,
+          notes: canonical.evidence_verification.notes,
+        }
+      : undefined,
     uncertaintyLevel: canonical.uncertainty_level as ArchivalMap["uncertaintyLevel"],
     recommendedArchiveTreatment: canonical.recommended_archive_treatment,
     humanNotes: canonical.human_notes,

@@ -155,6 +155,14 @@ export interface VersionReliability {
   reason: string;
 }
 
+export interface EvidenceVerification {
+  verifiedVersionCount: number;
+  totalVersionCount: number;
+  failedChallengeEvidenceCount: number;
+  sufficientEvidence: boolean;
+  notes: string;
+}
+
 export interface ArchivalMap {
   mapId: string;
   caseId: string;
@@ -165,6 +173,7 @@ export interface ArchivalMap {
   agreementZones: AgreementZone[];
   divergencePoints: DivergencePoint[];
   versionReliability: VersionReliability[];
+  evidenceVerification?: EvidenceVerification;
   uncertaintyLevel: UncertaintyLevel;
   recommendedArchiveTreatment: string;
   humanNotes: string;
