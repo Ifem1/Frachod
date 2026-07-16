@@ -231,9 +231,11 @@ class FracturedArchiveResolver(gl.Contract):
         try:
             response = gl.nondet.web.get(uri)
             body = response.body
+            if body is None:
+                body = b""
             text = body.decode("utf-8", "replace")
             actual_hash = self._sha256_hex(body)
-            status_code = self._to_int(response.status_code, 0)
+            status_code = self._to_int(response.status, 0)
             hash_match = self._hash_matches(claimed_hash, actual_hash)
             retrieval_status = "verified"
             if status_code < 200 or status_code > 299:
