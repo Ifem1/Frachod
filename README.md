@@ -2,115 +2,184 @@
 
 **A GenLayer-native archive for records that disagree.**
 
-Communities, DAOs, and institutions submit conflicting versions of a record — screenshots, forum posts, governance summaries, testimonies. GenLayer validators run non-deterministic AI comparison to reach consensus on an archival map: what agrees, what diverges, what came first, and how confident anyone can be. No version is erased to make room for another.
+Fractured Archive Resolver lets communities, DAOs, researchers, journalists, and institutions preserve conflicting versions of a record family without forcing a single version to erase the rest. Users submit record versions and challenges; GenLayer validators fetch the underlying evidence, verify hashes, reason over the retrieved content, and settle a structured archival map on-chain.
 
-> Built on [GenLayer](https://genlayer.com) · StudioNet (Chain ID 61999)
+> Built on [GenLayer](https://genlayer.com) on StudioNet (Chain ID `61999`)
 
 ---
 
-## What it does
+## Current Deployment
+
+- **StudioNet contract:** `0x4Eeca2BEe4E75748D1Fe7437ca9F578bAA09545D`
+- **Contract file:** `contracts/fractured_archive_resolver.py`
+- **Frontend:** React + Vite, configured through `VITE_GENLAYER_CONTRACT_ADDRESS`
+- **Explorer:** [explorer.genlayer.com](https://explorer.genlayer.com)
+
+The current deployment has been live-tested with two generated StudioNet wallets. The latest full test created a case, submitted two public records, requested mapping, filed a challenge with public evidence, requested remapping, and confirmed validator web retrieval plus SHA-256 verification for both submitted records and challenge evidence.
+
+Final remap evidence result from the live test:
+
+```text
+map_status: partial_map
+verified_version_count: 2
+total_version_count: 2
+failed_challenge_evidence_count: 0
+sufficient_evidence: true
+```
+
+---
+
+## What It Does
 
 | Actor | What they do |
 |-------|-------------|
-| **Archive creator** | Opens a case for one disputed record family and defines its context |
-| **Version submitter** | Locks a conflicting record into the case with a content hash and source metadata |
-| **Challenger** | Flags a version, map, or divergence point as suspicious, wrong, or incomplete |
-| **GenLayer Validators** | Independently compare submitted versions, reach consensus on a structured archival map |
+| Archive creator | Opens a case for one disputed record family and defines its context |
+| Version submitter | Submits a public `content_uri`, SHA-256 `content_hash`, source metadata, and claimed provenance |
+| Challenger | Flags a version, map, or divergence point with public evidence and an evidence hash |
+| GenLayer validators | Fetch records and challenge evidence, verify hashes, reason over retrieved content, and settle the archival map |
 
-The heart of Fractured Archive Resolver is `request_archival_mapping` / `request_remapping` — GenLayer non-deterministic methods that run an archival-reasoning prompt on every validator node and reach consensus with `gl.eq_principle.prompt_non_comparative`. No human admin decides which version is "true."
+The heart of the project is `request_archival_mapping` and `request_remapping`. These are GenLayer non-deterministic write methods that use validator-side web access and `gl.eq_principle.prompt_non_comparative` to settle a structured map through GenLayer consensus.
 
----
-
-## Stack
-
-**Resubmission evidence fix:** archival mapping now makes validators fetch each disputed `content_uri` and each challenge `evidence_uri`, compute SHA-256, compare those hashes to the submitted commitments, and include the fetched excerpts plus provenance checks in the consensus context. If fewer than two records are validator-retrievable and hash-verified, or challenge evidence fails verification, the stored map is forced to `insufficient_evidence`.
-
-| Layer | Technology |
-|-------|-----------|
-| Frontend | React 18, TypeScript, Vite |
-| Contract | GenLayer Intelligent Contract (Python) |
-| Network | StudioNet — Chain ID 61999 |
-| SDK | `genlayer-js` 1.1.8 |
-| Wallet | MetaMask / injected EIP-1193 wallet — connects directly, no burner key, no snap install |
+This is not a normal deterministic EVM metadata registry. The contract is designed for GenLayer's AI-validator model: validators independently retrieve evidence, evaluate provenance, compare record meaning, and agree on a canonical result.
 
 ---
 
-## Live deployment
+## Evidence Verification
 
-- **Contract:** deployed on StudioNet at `0x4Eeca2BEe4E75748D1Fe7437ca9F578bAA09545D`
-- **Explorer:** [explorer.genlayer.com](https://explorer.genlayer.com)
-- **Frontend:** run locally per [Getting started](#getting-started) below
+The rejection concern this version fixes was:
+
+> Validators never retrieve or hash-check the disputed records, so archival conclusions rely on submitter-authored metadata.
+
+That is now fixed in the contract.
+
+During mapping/remapping, the contract:
+
+1. Reads all submitted versions for the case.
+2. Fetches each `content_uri` through GenVM web access.
+3. Computes SHA-256 for the fetched bytes.
+4. Compares the computed hash against the submitted `content_hash`.
+5. Fetches each challenge `evidence_uri`.
+6. Computes and verifies the challenge evidence hash.
+7. Includes fetched excerpts, computed hashes, HTTP status, byte length, and provenance notes in the validator context.
+8. Stores an `evidence_verification` object inside the canonical map.
+9. Forces `insufficient_evidence` when the evidence gate fails.
+
+The map cannot quietly proceed from submitter-authored metadata alone. At least two submitted records must be validator-retrievable and hash-verified. Challenge evidence must also be retrievable and hash-verified for a remap to rely on it.
+
+Example canonical map field:
+
+```json
+{
+  "evidence_verification": {
+    "verified_version_count": 2,
+    "total_version_count": 2,
+    "failed_challenge_evidence_count": 0,
+    "sufficient_evidence": true,
+    "notes": "Both submitted versions are validator-retrieved and hash-verified..."
+  }
+}
+```
+
+If verification fails, the contract deterministically downgrades the normalized output:
+
+```text
+map_status: insufficient_evidence
+uncertainty_level: high
+recommended_archive_treatment: requires_more_evidence
+confidence: <= 35
+```
 
 ---
 
-## Contract: FracturedArchiveResolver
+## Contract
 
 `contracts/fractured_archive_resolver.py`
 
-A GenLayer Intelligent Contract written in Python. Manages archive cases, version submissions, challenges, and AI-powered archival-map resolution.
+A GenLayer Intelligent Contract written in Python with a pinned GenVM dependency header. It manages archive cases, submitted versions, challenges, audit logs, append-only map history, and AI-validator archival mapping.
 
-### Key methods
+### Key Methods
 
 | Method | Role | Description |
 |--------|------|-------------|
 | `create_archive_case` | Creator | Open a case for one disputed record family |
-| `submit_version` | Submitter | Lock a version into the case with a content hash |
-| `challenge_version_or_map` | Anyone | Challenge a version, the current map, or a divergence point |
-| `request_archival_mapping` | Anyone | **Trigger GenLayer non-deterministic archival comparison** |
-| `request_remapping` | Anyone | Re-run mapping after a challenge or new evidence — old maps are never deleted |
-| `close_case` | Creator only | Close a case to new submissions; records stay readable |
+| `submit_version` | Submitter | Lock a version into a case with URI, hash, source metadata, and claimed provenance |
+| `challenge_version_or_map` | Anyone | Challenge a version, current map, or divergence point with public evidence |
+| `request_archival_mapping` | Anyone | Trigger initial validator evidence retrieval, hash checking, and archival mapping |
+| `request_remapping` | Anyone | Re-run evidence verification and mapping after a challenge or new versions |
+| `close_case` | Creator only | Close a case to new submissions while keeping all records readable |
 | `get_case` / `get_all_cases` | Anyone | Read case data |
 | `get_versions` | Anyone | Read all versions for a case |
-| `get_current_map` / `get_map_history` | Anyone | Read the current or full history of archival maps |
-| `get_challenges` / `get_divergence_points` | Anyone | Read challenges and the latest map's divergence points |
-| `get_audit_trail` | Anyone | Read the immutable on-chain event log for a case |
+| `get_current_map` / `get_map_history` | Anyone | Read the current map or append-only map history |
+| `get_challenges` | Anyone | Read challenges for a case |
+| `get_divergence_points` | Anyone | Read divergence points from the latest map |
+| `get_audit_trail` | Anyone | Read the immutable audit log for a case |
 
-### Non-deterministic archival mapping
-
-`request_archival_mapping` / `request_remapping` are the GenLayer-native core of the protocol:
+### Mapping Flow
 
 ```python
-# Leader generates the archival map from submitted versions + challenges
 consensus_json = gl.eq_principle.prompt_non_comparative(
-    lambda: context,
-    task="You are an archival reasoning agent... Compare the submitted "
-         "versions... Identify agreement zones, divergence points, likely "
-         "timeline, source reliability... Preserve contradictions where "
-         "they remain meaningful or unresolved...",
-    criteria="map_status must be exactly one of: resolved_map, partial_map, "
-             "insufficient_evidence, contested_map, requires_more_versions. "
-             "The map must not erase or dismiss any submitted version "
-             "without stated evidence...",
+    build_evidence_context,
+    task=(
+        "Use validator-fetched content excerpts and validator-computed "
+        "sha256 hashes, not submitter-authored metadata alone..."
+    ),
+    criteria=(
+        "If fewer than two submitted records are retrievable and "
+        "sha256-verified by validators, map_status must be insufficient_evidence..."
+    ),
 )
 ```
 
-The output is canonicalized — enum values validated, confidence clamped 0–100, version IDs checked against submitted IDs — before being stored, so validators can reach consensus on an inherently non-deterministic task.
+After the model returns JSON, the contract normalizes all enums, clamps confidence values, filters version IDs to actual submitted versions, normalizes `evidence_verification`, and applies a deterministic evidence gate. The post-processing guard means a too-optimistic model response cannot bypass failed retrieval or hash checks.
 
-### Map statuses
+---
 
-```
+## Map Outcomes
+
+Map statuses:
+
+```text
 resolved_map | partial_map | insufficient_evidence | contested_map | requires_more_versions
 ```
 
-### Uncertainty levels
+Uncertainty levels:
 
-```
+```text
 low | medium | high | irreducible
 ```
 
-### Recommended archive treatments
+Recommended archive treatments:
 
-```
+```text
 preserve_as_primary | preserve_as_parallel | preserve_as_later_revision
-preserve_as_translation_variant | preserve_as_disputed_memory | preserve_as_low_confidence
-preserve_as_possible_tampering | exclude_from_current_map | requires_more_evidence
+preserve_as_translation_variant | preserve_as_disputed_memory
+preserve_as_low_confidence | preserve_as_possible_tampering
+exclude_from_current_map | requires_more_evidence
 ```
 
 ---
 
-## Getting started
+## Frontend
 
-### 1. Clone and install
+The frontend is a React 18 + TypeScript + Vite app using `genlayer-js` `1.1.8`.
+
+It supports:
+
+- Live StudioNet mode when `VITE_GENLAYER_CONTRACT_ADDRESS` is set.
+- Simulated local mode when no contract address is configured.
+- Injected EIP-1193 wallets such as MetaMask.
+- Automatic StudioNet add/switch prompts.
+- Case creation, version submission, mapping, challenge filing, remapping, close case.
+- Current map, map history, divergence points, timeline, audit trail, public archive view.
+- Evidence verification display on consensus maps.
+
+The UI does not accept raw private keys. For live app use, import a test key into a wallet extension or use the injected wallet flow. For script-based tests, `genlayer-js` supports `createAccount(privateKey)`.
+
+---
+
+## Getting Started
+
+### 1. Install
 
 ```bash
 git clone https://github.com/Ifem1/Frachod.git
@@ -118,19 +187,14 @@ cd Frachod
 npm install
 ```
 
-### 2. Deploy the contract
-
-Open `contracts/fractured_archive_resolver.py` in [GenLayer Studio](https://studio.genlayer.com), deploy to StudioNet, and copy the contract address. (Or reuse the address already deployed above.)
-
-### 3. Set the contract address
+### 2. Configure StudioNet
 
 ```env
-# .env
-VITE_GENLAYER_CONTRACT_ADDRESS=0xYourDeployedContractAddress
+VITE_GENLAYER_CONTRACT_ADDRESS=0x4Eeca2BEe4E75748D1Fe7437ca9F578bAA09545D
 VITE_GENLAYER_CHAIN=studionet
 ```
 
-### 4. Run the frontend
+### 3. Run Locally
 
 ```bash
 npm run dev
@@ -138,48 +202,92 @@ npm run dev
 
 Open [http://localhost:5173](http://localhost:5173).
 
-### 5. Connect your wallet
+### 4. Connect Wallet
 
-Click **Connect Wallet**. The app requests access from your injected wallet (e.g. MetaMask) and automatically adds/switches it to StudioNet on your first transaction — no manual network setup required.
-
-Without a contract address set, the app runs entirely in a **simulated mode**: a fake wallet, a heuristic map generator, and a pre-seeded demo case ("January DAO Grant Promise Versions"), so the UI can be exercised with no chain connection at all.
+Click **Connect Wallet**. The app uses the injected wallet provider and asks it to add or switch to StudioNet when needed.
 
 ---
 
-## Pages
+## Routes
 
 | Route | Description |
 |-------|-------------|
-| `/` | Landing — concept, how GenLayer maps conflict, example scenario |
-| `/cases` | Archive Cases dashboard — search and filter by status, type, uncertainty |
-| `/create` | Create Archive Case |
-| `/cases/[caseId]` | Case room — Overview, Versions, Divergence Map, Timeline, Consensus Map, Challenges, History |
-| `/cases/[caseId]/submit` | Submit Version |
-| `/archive/[caseId]` | Public dossier view — shareable, no wallet clutter |
+| `/` | Landing page and project explanation |
+| `/cases` | Archive case dashboard |
+| `/create` | Create archive case |
+| `/cases/[caseId]` | Case room with overview, versions, divergence graph, timeline, map, challenges, history |
+| `/cases/[caseId]/submit` | Submit version |
+| `/archive/[caseId]` | Public archive view |
 | `/settings` | Wallet, network mode, and local cache controls |
 
 ---
 
-## Critical invariants
+## Critical Invariants
 
 1. Archival mapping requires at least two submitted versions.
-2. A content hash locks each version; a duplicate hash in the same case requires a metadata explanation.
-3. Only the case creator can close a case.
-4. Closing a case never deletes records — closed cases remain readable.
-5. Prior archival maps are never overwritten. Remapping appends a new map; every previous map stays in `get_map_history`.
-6. Challenging a version flags it — it is never removed from the archive.
-7. Every version ID referenced in a returned map is validated against the case's actual submitted versions before being stored.
-8. Non-deterministic model output is canonicalized (enum-checked, confidence clamped 0–100, sorted keys) so validators can reach strict-equality consensus on an inherently fuzzy task.
+2. Each version must include a `content_hash`.
+3. Mapping fetches each `content_uri` and verifies the fetched SHA-256 against `content_hash`.
+4. Challenge evidence is fetched and SHA-256 checked against `evidence_hash`.
+5. Failed retrieval, unsupported URI, HTTP error, missing challenge evidence, or hash mismatch is recorded in the evidence gate.
+6. Failed evidence gates force `insufficient_evidence`.
+7. Prior maps are never overwritten; remapping appends to history.
+8. Challenging a version flags it but never deletes it.
+9. Closing a case blocks new submissions but keeps records readable.
+10. Every version ID in a returned map is checked against actual submitted versions.
+11. LLM output is normalized before storage: enums checked, IDs filtered, confidence clamped, and evidence verification enforced.
+12. The canonical map stores `evidence_verification` so users and reviewers can inspect what validators actually verified.
 
 ---
 
-## Design system: Archive Room
+## Verification Status
 
-Additional evidence invariants for resubmission:
+Latest local checks:
 
-- Validator evidence retrieval is mandatory for archival conclusions: at least two submitted records must be fetched from `http(s)` URIs and match their SHA-256 commitments.
-- Challenge evidence must also be validator-retrievable and hash-verified; otherwise the remap records `insufficient_evidence` instead of relying on challenger or submitter metadata.
-- The canonical map includes an `evidence_verification` object so reviewers and users can inspect the evidence gate that supported or blocked the conclusion.
+```text
+genvm-lint check contracts/fractured_archive_resolver.py --json
+ok: true
+contract: FracturedArchiveResolver
+methods: 19
+view_methods: 11
+write_methods: 8
+```
+
+```text
+npm.cmd run build
+result: passed
+```
+
+Latest live StudioNet flow test:
+
+```text
+case_id: case-2
+initial_map: map-2
+remap: map-3
+record retrieval: passed
+record hash verification: passed
+challenge evidence retrieval: passed
+challenge evidence hash verification: passed
+sufficient_evidence: true
+```
+
+The GenVM lint warning about a newer `py-genlayer` runner is informational. The contract intentionally keeps its pinned runner until a runner upgrade is explicitly chosen and retested.
+
+---
+
+## Stack
+
+| Layer | Technology |
+|-------|------------|
+| Contract | GenLayer Intelligent Contract, Python, GenVM |
+| Consensus | GenLayer AI-validator consensus with `prompt_non_comparative` |
+| Frontend | React 18, TypeScript, Vite |
+| SDK | `genlayer-js` 1.1.8 |
+| Network | StudioNet, Chain ID `61999` |
+| Wallet | Injected EIP-1193 provider, e.g. MetaMask |
+
+---
+
+## Design System
 
 | Token | Value |
 |-------|-------|
@@ -194,7 +302,7 @@ Additional evidence invariants for resubmission:
 | Archive Green | `#3F6B57` |
 | Charcoal Line | `#252A31` |
 
-Fonts: **Cormorant Garamond** (display/titles) · **Inter** (body/UI) · **IBM Plex Mono** (hashes, version IDs, technical data)
+Fonts: **Cormorant Garamond** for display text, **Inter** for body/UI, and **IBM Plex Mono** for hashes and technical data.
 
 ---
 
