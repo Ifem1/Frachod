@@ -1,6 +1,7 @@
 import { ReactNode, useEffect, useState } from "react";
 import { Link, NavLink } from "react-router-dom";
 import { useAppState, connectWallet, disconnectWallet, resetDemo, restoreWalletIfAuthorized } from "../lib/store";
+import { isLiveMode } from "../lib/genlayer";
 import { label, shortAddr } from "../lib/labels";
 import type { TxHandle } from "../lib/store";
 import type { Severity, UncertaintyLevel, ReliabilityLevel } from "../types";
@@ -68,7 +69,9 @@ export function Layout({ children }: { children: ReactNode }) {
         <div className="container spread">
           <span>Fractured Archive Resolver — preserve disagreement without losing structure.</span>
           <span className="row">
-            <span>Powered by GenLayer consensus mapping (simulated in this build)</span>
+            <span>
+              Powered by GenLayer consensus mapping ({isLiveMode() ? "live StudioNet contract" : "simulated in this build"})
+            </span>
             <button className="btn secondary small" onClick={resetDemo} title="Reset local demo data">
               Reset demo data
             </button>
