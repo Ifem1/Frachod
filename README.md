@@ -37,7 +37,7 @@ The heart of Fractured Archive Resolver is `request_archival_mapping` / `request
 
 ## Live deployment
 
-- **Contract:** deployed on StudioNet at `0x9BAC0b002F7Bf28B6d2EE3fB44ce7f518199Ad4B`
+- **Contract:** deployed on StudioNet at `0x4Eeca2BEe4E75748D1Fe7437ca9F578bAA09545D`
 - **Explorer:** [explorer.genlayer.com](https://explorer.genlayer.com)
 - **Frontend:** run locally per [Getting started](#getting-started) below
 
